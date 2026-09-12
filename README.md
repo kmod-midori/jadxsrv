@@ -16,8 +16,8 @@ system), rather than as an end-user application on its own.
 # Build (compiles, tests, and assembles a jar)
 ./gradlew build
 
-# Run the server directly with one or more APK, JAR, or DEX inputs
-./gradlew run --args="/absolute/path/to/app.apk"
+# Run the server with one or more APK, JAR, or DEX inputs
+./run.sh /absolute/path/to/app.apk
 ```
 
 The server listens on `http://0.0.0.0:28080`.
@@ -28,7 +28,7 @@ Input files are positional CLI arguments. Supply one or more absolute or relativ
 starting the server:
 
 ```bash
-./gradlew run --args="/path/to/app.apk /path/to/classes.dex"
+./run.sh /path/to/app.apk /path/to/classes.dex
 ```
 
 The server initializes one `JadxDecompiler` for those files, then exposes two virtual top-level directories:
