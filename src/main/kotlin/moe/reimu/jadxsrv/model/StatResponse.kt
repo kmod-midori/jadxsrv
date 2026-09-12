@@ -5,8 +5,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class StatResponse(
     val type: Int,
-    val ctime: Long = 0,
-    val mtime: Long = 0,
+    val ctime: Long = System.currentTimeMillis(),
+    val mtime: Long = System.currentTimeMillis(),
     val size: Long = 0,
 ) {
     companion object {

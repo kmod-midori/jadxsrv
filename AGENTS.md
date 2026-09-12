@@ -43,9 +43,18 @@ Input files are supplied as positional CLI arguments at server startup (see `App
 - Response DTOs are `kotlinx.serialization` `@Serializable` data classes under `model/`; kind/type constants
   (e.g. `OutlineResponse.Symbol.TYPE_METHOD`, `StatResponse.TYPE_FILE`) mirror LSP-style symbol kinds — reuse
   existing constants rather than inventing new numbering when adding symbol kinds.
-- `POST /rename/classes/{path...}?offset=` resolves a class, method, or field
-  from JADX code metadata and applies an in-memory user alias. It follows
-  JADX's `JadxCodeData`/`reloadCodeData()` flow; empty names reset aliases.
+- `POST /rename/classes/{path...}?offset=` resolves a class, method, field,
+  or local variable (including method args) from JADX code metadata and applies
+  an in-memory user alias. It follows JADX's `JadxCodeData`/`reloadCodeData()`
+  flow; empty names reset aliases. Variable renames use a `JadxCodeRef.forVar`
+  code ref attached to the enclosing method ref (same shape as jadx-gui's
+  `JVariable.buildCodeRename`), so they are scoped to one SSA variable.
+- After a rename, `refreshAffectedClasses()` must invalidate decompiled code
+  for every class that can show the renamed symbol (the node's own class, its
+  `useIn` classes, and for methods the override-related methods and their
+  callers), mirroring jadx-gui's `RenameService` — otherwise `/read` keeps
+  serving stale cached code for other classes. Affected classes are unloaded,
+  so the next read re-decompiles them on demand.
 
 ## Conventions
 

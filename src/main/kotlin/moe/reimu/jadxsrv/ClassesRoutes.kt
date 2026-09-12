@@ -14,13 +14,16 @@ import jadx.api.JavaNode
 import jadx.api.JadxDecompiler
 import jadx.api.JavaClass
 import jadx.api.JavaPackage
+import jadx.api.JavaVariable
 import jadx.api.metadata.ICodeAnnotation
 import jadx.api.metadata.annotations.NodeDeclareRef
+import jadx.api.metadata.annotations.VarNode
 import jadx.core.dex.attributes.AFlag
 import jadx.core.dex.attributes.AType
 import jadx.core.dex.nodes.ClassNode
 import jadx.core.dex.nodes.FieldNode
 import jadx.core.dex.nodes.MethodNode
+import jadx.api.data.impl.JadxCodeRef
 import jadx.api.data.impl.JadxCodeRename
 import jadx.api.data.impl.JadxNodeRef
 import jadx.core.deobf.NameMapper
@@ -162,12 +165,12 @@ fun Route.classesRoutes(decompiler: Decompiler) {
             return@get
         }
 
-        val renameNode = resolveRenameNode(decompiler, resolved, offset)
-        if (renameNode == null) {
+        val renameTarget = resolveRenameTarget(decompiler, resolved, offset)
+        if (renameTarget == null) {
             call.respond(RenameInfoResponse(canRename = false))
             return@get
         }
-        call.respond(RenameInfoResponse(canRename = true, name = renameNode.name))
+        call.respond(RenameInfoResponse(canRename = true, name = renameTarget.node.name))
     }
     post("/rename/classes/{path...}") {
         val pathParts = getCleanPath()
@@ -179,8 +182,8 @@ fun Route.classesRoutes(decompiler: Decompiler) {
             return@post
         }
 
-        val renameNode = resolveRenameNode(decompiler, resolved, offset)
-        if (renameNode == null) {
+        val renameTarget = resolveRenameTarget(decompiler, resolved, offset)
+        if (renameTarget == null) {
             call.respondText("No renameable symbol at offset", status = io.ktor.http.HttpStatusCode.BadRequest)
             return@post
         }
@@ -190,12 +193,23 @@ fun Route.classesRoutes(decompiler: Decompiler) {
             return@post
         }
 
+        // Capture the pre-rename location when the rename moves a file: only
+        // top-level class renames change the class file's path.
+        val oldLocation = renameTarget.node.let { node ->
+            if (node is JavaClass && !node.classNode.isInner) {
+                Location(node.classNode)
+            } else {
+                null
+            }
+        }
+
         synchronized(decompiler) {
             val renames = decompiler.codeData.renames.toMutableSet()
-            val rename = JadxCodeRename(JadxNodeRef.forJavaNode(renameNode), newName)
+            val rename = renameTarget.rename
+            rename.newName = newName
             renames.remove(rename)
             if (newName.isEmpty()) {
-                renameNode.removeAlias()
+                renameTarget.node.removeAlias()
             } else {
                 renames.add(rename)
             }
@@ -204,10 +218,21 @@ fun Route.classesRoutes(decompiler: Decompiler) {
             decompiler.jadx.reloadCodeData()
         }
 
-        val renamedNode = decompiler.jadx.getJavaNodeByRef(renameNode.codeNodeRef)
-            ?: throw IllegalStateException("Failed to resolve renamed symbol")
-        renamedNode.topParentClass.reload()
-        call.respond(RenameResponse(Location(renamedNode.topParentClass.classNode), renamedNode.name))
+        val javaVar = renameTarget.node as? JavaVariable
+        if (javaVar != null) {
+            refreshAffectedClasses(javaVar)
+            // Variable annotations are recreated on decompilation, so the old
+            // node is stale after the reload. Look up the fresh one by
+            // method + register + SSA version to report the new name.
+            val freshName = findFreshVariableName(resolved, javaVar) ?: newName
+            call.respond(RenameResponse(Location(javaVar.topParentClass.classNode), freshName, oldLocation))
+        } else {
+            val renamedNode = decompiler.jadx.getJavaNodeByRef(renameTarget.node.codeNodeRef)
+                ?: throw IllegalStateException("Failed to resolve renamed symbol")
+            val response = RenameResponse(Location(renamedNode.topParentClass.classNode), renamedNode.name, oldLocation)
+            refreshAffectedClasses(renamedNode)
+            call.respond(response)
+        }
     }
     get("refs/classes/{path...}") {
         val pathParts = getCleanPath()
@@ -268,13 +293,71 @@ private fun JavaNode.replaceConstructor(): JavaNode {
     return if (this is JavaMethod && this.isConstructor) this.declaringClass else this
 }
 
-private fun resolveRenameNode(decompiler: Decompiler, cls: JavaClass, offset: Int): JavaNode? {
+private class RenameTarget(
+    val node: JavaNode,
+    val rename: JadxCodeRename,
+)
+
+private fun resolveRenameTarget(decompiler: Decompiler, cls: JavaClass, offset: Int): RenameTarget? {
     cls.decompile()
     val node = decompiler.jadx.getJavaNodeAtPosition(cls.codeInfo, offset) ?: return null
     if (!node.canRename()) {
         return null
     }
-    return node.replaceConstructor()
+    return when (val fixedNode = node.replaceConstructor()) {
+        is JavaVariable -> {
+            // Variables are renamed through a code ref attached to the
+            // enclosing method, mirroring JadxCodeRef/JVariable in jadx-gui.
+            val rename = JadxCodeRename(JadxNodeRef.forMth(fixedNode.mth), JadxCodeRef.forVar(fixedNode), "")
+            RenameTarget(fixedNode, rename)
+        }
+
+        else -> {
+            val nodeRef = JadxNodeRef.forJavaNode(fixedNode) ?: return null
+            RenameTarget(fixedNode, JadxCodeRename(nodeRef, ""))
+        }
+    }
+}
+
+/**
+ * Invalidates decompiled code for every class affected by a rename, mirroring
+ * jadx-gui's RenameService: the node's own class plus classes referencing it
+ * (and, for methods, override-related methods and their callers). Classes are
+ * unloaded so the next read re-decompiles them on demand.
+ */
+private fun refreshAffectedClasses(node: JavaNode) {
+    val toUpdate = mutableListOf<JavaNode>()
+    when (node) {
+        is JavaVariable -> toUpdate.add(node.mth)
+        is JavaMethod -> {
+            toUpdate.add(node)
+            toUpdate.addAll(node.useIn)
+            val overrideRelated = node.overrideRelatedMethods
+            toUpdate.addAll(overrideRelated)
+            for (ovrdMth in overrideRelated) {
+                toUpdate.addAll(ovrdMth.useIn)
+            }
+        }
+
+        else -> {
+            // Classes and fields
+            toUpdate.add(node)
+            toUpdate.addAll(node.useIn)
+        }
+    }
+    toUpdate.mapTo(mutableSetOf()) { it.topParentClass }.forEach { it.unload() }
+}
+
+private fun findFreshVariableName(cls: JavaClass, javaVar: JavaVariable): String? {
+    cls.decompile()
+    val oldVarNode = javaVar.varNode
+    for ((_, ann) in cls.codeInfo.codeMetadata.asMap) {
+        val node = if (ann is NodeDeclareRef) ann.node else ann
+        if (node is VarNode && node.mth == oldVarNode.mth && node.reg == oldVarNode.reg && node.ssa == oldVarNode.ssa) {
+            return node.name
+        }
+    }
+    return null
 }
 
 private fun JavaNode.canRename(): Boolean {
@@ -282,6 +365,7 @@ private fun JavaNode.canRename(): Boolean {
         is JavaClass -> !classNode.contains(AFlag.DONT_RENAME)
         is JavaField -> !fieldNode.contains(AFlag.DONT_RENAME)
         is JavaMethod -> !isClassInit && !methodNode.contains(AFlag.DONT_RENAME)
+        is JavaVariable -> true
         else -> false
     }
 }
