@@ -3,6 +3,7 @@ package moe.reimu.jadxsrv
 import jadx.api.JadxArgs
 import jadx.api.JadxDecompiler
 import jadx.api.ResourceType
+import jadx.api.data.impl.JadxCodeData
 import jadx.core.xmlgen.ResContainer
 import org.slf4j.LoggerFactory
 import java.io.Closeable
@@ -30,6 +31,7 @@ fun loadDecompiler(files: List<File>): Decompiler {
 data class Decompiler(
     val jadx: JadxDecompiler,
     val arsc: ResContainer?,
+    val codeData: JadxCodeData = JadxCodeData(),
 ) : Closeable {
     override fun close() {
         jadx.close()

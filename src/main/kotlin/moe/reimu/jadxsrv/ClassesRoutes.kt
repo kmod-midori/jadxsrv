@@ -5,7 +5,12 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.route
+import io.ktor.server.request.receive
+import jadx.api.JavaField
+import jadx.api.JavaMethod
+import jadx.api.JavaNode
 import jadx.api.JadxDecompiler
 import jadx.api.JavaClass
 import jadx.api.JavaPackage
@@ -16,12 +21,18 @@ import jadx.core.dex.attributes.AType
 import jadx.core.dex.nodes.ClassNode
 import jadx.core.dex.nodes.FieldNode
 import jadx.core.dex.nodes.MethodNode
+import jadx.api.data.impl.JadxCodeRename
+import jadx.api.data.impl.JadxNodeRef
+import jadx.core.deobf.NameMapper
 import moe.reimu.jadxsrv.model.AnnotationResponse
 import moe.reimu.jadxsrv.model.DefinitionResponse
 import moe.reimu.jadxsrv.model.Location
 import moe.reimu.jadxsrv.model.LsResponse
 import moe.reimu.jadxsrv.model.OutlineResponse
 import moe.reimu.jadxsrv.model.RefsResponse
+import moe.reimu.jadxsrv.model.RenameRequest
+import moe.reimu.jadxsrv.model.RenameInfoResponse
+import moe.reimu.jadxsrv.model.RenameResponse
 import moe.reimu.jadxsrv.model.StatResponse
 import org.slf4j.LoggerFactory
 
@@ -142,6 +153,62 @@ fun Route.classesRoutes(decompiler: Decompiler) {
         resolved.decompile()
         call.respond(OutlineResponse(classToSymbol(resolved.classNode)))
     }
+    get("/rename/classes/{path...}") {
+        val pathParts = getCleanPath()
+        val offset = getOffsetInt()
+        val resolved = resolvePath(decompiler.jadx, pathParts)
+        if (resolved !is JavaClass) {
+            call.respond(RenameInfoResponse(canRename = false))
+            return@get
+        }
+
+        val renameNode = resolveRenameNode(decompiler, resolved, offset)
+        if (renameNode == null) {
+            call.respond(RenameInfoResponse(canRename = false))
+            return@get
+        }
+        call.respond(RenameInfoResponse(canRename = true, name = renameNode.name))
+    }
+    post("/rename/classes/{path...}") {
+        val pathParts = getCleanPath()
+        val offset = getOffsetInt()
+        val request = call.receive<RenameRequest>()
+        val resolved = resolvePath(decompiler.jadx, pathParts)
+        if (resolved !is JavaClass) {
+            call.respondText("Class not found", status = io.ktor.http.HttpStatusCode.NotFound)
+            return@post
+        }
+
+        val renameNode = resolveRenameNode(decompiler, resolved, offset)
+        if (renameNode == null) {
+            call.respondText("No renameable symbol at offset", status = io.ktor.http.HttpStatusCode.BadRequest)
+            return@post
+        }
+        val newName = request.name.trim()
+        if (newName.isNotEmpty() && !NameMapper.isValidIdentifier(newName)) {
+            call.respondText("Invalid Java identifier", status = io.ktor.http.HttpStatusCode.BadRequest)
+            return@post
+        }
+
+        synchronized(decompiler) {
+            val renames = decompiler.codeData.renames.toMutableSet()
+            val rename = JadxCodeRename(JadxNodeRef.forJavaNode(renameNode), newName)
+            renames.remove(rename)
+            if (newName.isEmpty()) {
+                renameNode.removeAlias()
+            } else {
+                renames.add(rename)
+            }
+            decompiler.codeData.renames = renames.sorted()
+            decompiler.jadx.args.codeData = decompiler.codeData
+            decompiler.jadx.reloadCodeData()
+        }
+
+        val renamedNode = decompiler.jadx.getJavaNodeByRef(renameNode.codeNodeRef)
+            ?: throw IllegalStateException("Failed to resolve renamed symbol")
+        renamedNode.topParentClass.reload()
+        call.respond(RenameResponse(Location(renamedNode.topParentClass.classNode), renamedNode.name))
+    }
     get("refs/classes/{path...}") {
         val pathParts = getCleanPath()
         val offset = getOffsetInt()
@@ -194,6 +261,28 @@ fun Route.classesRoutes(decompiler: Decompiler) {
         }
 
         call.respond(RefsResponse(refs))
+    }
+}
+
+private fun JavaNode.replaceConstructor(): JavaNode {
+    return if (this is JavaMethod && this.isConstructor) this.declaringClass else this
+}
+
+private fun resolveRenameNode(decompiler: Decompiler, cls: JavaClass, offset: Int): JavaNode? {
+    cls.decompile()
+    val node = decompiler.jadx.getJavaNodeAtPosition(cls.codeInfo, offset) ?: return null
+    if (!node.canRename()) {
+        return null
+    }
+    return node.replaceConstructor()
+}
+
+private fun JavaNode.canRename(): Boolean {
+    return when (this) {
+        is JavaClass -> !classNode.contains(AFlag.DONT_RENAME)
+        is JavaField -> !fieldNode.contains(AFlag.DONT_RENAME)
+        is JavaMethod -> !isClassInit && !methodNode.contains(AFlag.DONT_RENAME)
+        else -> false
     }
 }
 

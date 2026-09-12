@@ -43,6 +43,9 @@ Input files are supplied as positional CLI arguments at server startup (see `App
 - Response DTOs are `kotlinx.serialization` `@Serializable` data classes under `model/`; kind/type constants
   (e.g. `OutlineResponse.Symbol.TYPE_METHOD`, `StatResponse.TYPE_FILE`) mirror LSP-style symbol kinds — reuse
   existing constants rather than inventing new numbering when adding symbol kinds.
+- `POST /rename/classes/{path...}?offset=` resolves a class, method, or field
+  from JADX code metadata and applies an in-memory user alias. It follows
+  JADX's `JadxCodeData`/`reloadCodeData()` flow; empty names reset aliases.
 
 ## Conventions
 
