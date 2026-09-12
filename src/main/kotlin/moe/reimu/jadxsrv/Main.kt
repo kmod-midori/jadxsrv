@@ -64,6 +64,7 @@ class App : CliktCommand() {
                     classesRoutes(decompiler)
                     resourcesRoutes(decompiler)
                     searchRoutes(decompiler)
+                    callHierarchyRoutes(decompiler)
                 }
             }.start(wait = true)
         } finally {

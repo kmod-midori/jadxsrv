@@ -55,6 +55,15 @@ Input files are supplied as positional CLI arguments at server startup (see `App
   callers), mirroring jadx-gui's `RenameService` — otherwise `/read` keeps
   serving stale cached code for other classes. Affected classes are unloaded,
   so the next read re-decompiles them on demand.
+- `GET /callhierarchy[/incoming|/outgoing]/classes/{path...}?offset=`
+  (`CallHierarchyRoutes.kt`) backs the editor's call hierarchy, mirroring
+  jadx-gui's `UsageDialogPlus` (incoming includes override-related methods).
+  Call-site attribution to enclosing methods uses `ICodeMetadata.getNodeAt()`.
+  Compare method identity by source key (declaring class + name + parameter
+  types, no return type), never by `MethodNode`/`MethodInfo` equality: jadx
+  merges bridge methods into one source method and codegen can leave stale
+  instances in `useIn`/annotations, so stricter comparisons silently miss
+  results.
 
 ## Conventions
 

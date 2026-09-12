@@ -16,6 +16,7 @@ data class OutlineResponse(val root: Symbol? = null) {
             const val TYPE_CLASS = 4
             const val TYPE_METHOD = 5
             const val TYPE_FIELD = 7
+            const val TYPE_CONSTRUCTOR = 8
             const val TYPE_INTERFACE = 10
         }
     }
