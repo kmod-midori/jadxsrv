@@ -18,14 +18,12 @@ system (paths encode which package/class/resource is being browsed).
 
 ## Architecture
 
-Every route is nested under `/{encodedFilePaths}`, where `encodedFilePaths` is a `;`-separated list of
-Base64url-encoded absolute file paths (see `getDecompiler()` / `Decompilers.getOrNewDecompiler` in `Decompilers.kt`).
-This value identifies *which* decompiled input(s) (APK/JAR/DEX files) a request operates on.
+Input files are supplied as positional CLI arguments at server startup (see `App` in `Main.kt`). One
+`Decompiler` serves all requests for the supplied APK/JAR/DEX inputs.
 
-- `Decompilers` (singleton object) caches one `Decompiler` (wraps `JadxDecompiler` + open `ZipFile`s + the loaded
-  `.arsc` resource table) per unique `encodedFilePaths` key, guarded by a `Mutex`. Decompilers are created lazily
-  on first access and explicitly torn down via `POST /{encodedFilePaths}/close`.
-- Within an `encodedFilePaths` scope there are two virtual top-level directories, each with parallel
+- `loadDecompiler()` creates the `Decompiler` (wraps `JadxDecompiler` + the loaded `.arsc` resource table) once at
+  startup; `Main.kt` passes that instance to all route groups and closes it on shutdown.
+- There are two virtual top-level directories, each with parallel
   `ls` / `stat` / `read` / `annotation` / `definition` sub-routes:
   - `classes` (`ClassesRoutes.kt`) — package/class tree backed by `jadx.api.JavaPackage` / `JavaClass`.
     `resolvePath()` walks a dot-path built from the URL path segments to resolve a `RootPath` / `JavaPackage` /
@@ -46,8 +44,8 @@ This value identifies *which* decompiled input(s) (APK/JAR/DEX files) a request 
 
 ## Conventions
 
-- Route handlers always fetch the active decompiler for a request via the `getDecompiler()` extension function
-  (`Decompilers.kt`) — never construct a `JadxDecompiler` directly in a route.
+- Route groups receive the active `Decompiler` from `Main.kt` — never construct a `JadxDecompiler` directly in a
+  route.
 - Path segments arrive as a raw list from Ktor (`call.parameters.getAll("path")`); use `getCleanPath()`
   (`Utils.kt`) to strip the leading/trailing empty segments before resolving.
 - Route files use `when (resolved) { is JavaClass -> ...; is JavaPackage -> ... }` over the result of

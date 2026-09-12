@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 private val logger = LoggerFactory.getLogger("jadxsrv.search")
 
 @Suppress("UnstableApiUsage")
-fun Route.searchRoutes() {
+fun Route.searchRoutes(decompiler: Decompiler) {
     val tasks = ConcurrentHashMap<String, Unit>()
 
     fun shouldRun(taskId: String): Boolean {
@@ -20,7 +20,6 @@ fun Route.searchRoutes() {
     }
 
     post("/search/{taskId}") {
-        val decompiler = getDecompiler()
         val query = call.request.queryParameters["query"] ?: run {
             call.respondText("No query", status = io.ktor.http.HttpStatusCode.BadRequest)
             return@post

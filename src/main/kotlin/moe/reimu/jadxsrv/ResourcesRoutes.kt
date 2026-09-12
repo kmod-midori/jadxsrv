@@ -19,13 +19,12 @@ import java.util.stream.Stream
 
 private val logger = LoggerFactory.getLogger("jadxsrv.resources")
 
-fun Route.resourcesRoutes() {
+fun Route.resourcesRoutes(decompiler: Decompiler) {
     get("/ls/resources/{path...}") {
         val path = getCleanPath()
         val dirs = mutableSetOf<String>()
         val files = mutableSetOf<String>()
 
-        val decompiler = getDecompiler()
         val rawResources = decompiler.jadx.resources.stream().map { it.deobfName ?: it.originalName }
         val encodedResources = decompiler.arsc?.subFiles?.stream()?.map { it.name } ?: Stream.empty()
 
@@ -57,7 +56,6 @@ fun Route.resourcesRoutes() {
         )
     }
     get("/stat/resources/{path...}") {
-        val decompiler = getDecompiler()
         val res = resolveResource(decompiler)
         if (res == null) {
             call.respond(StatResponse(type = StatResponse.TYPE_DIR))
@@ -88,7 +86,6 @@ fun Route.resourcesRoutes() {
         }
     }
     get("/read/resources/{path...}") {
-        val decompiler = getDecompiler()
         val loaded = resolveResource(decompiler)
         if (loaded == null) {
             call.respondText("File not found", status = io.ktor.http.HttpStatusCode.NotFound)
@@ -128,7 +125,7 @@ fun Route.resourcesRoutes() {
     }
     get("/annotation/resources/{path...}") {
         val offset = getOffsetInt()
-        val loaded = resolveResource(getDecompiler())
+        val loaded = resolveResource(decompiler)
         if (loaded == null) {
             call.respondText("File not found", status = io.ktor.http.HttpStatusCode.NotFound)
             return@get
@@ -150,7 +147,7 @@ fun Route.resourcesRoutes() {
     }
     get("/definition/resources/{path...}") {
         val offset = getOffsetInt()
-        val loaded = resolveResource(getDecompiler())
+        val loaded = resolveResource(decompiler)
         if (loaded == null) {
             call.respondText("File not found", status = io.ktor.http.HttpStatusCode.NotFound)
             return@get

@@ -8,6 +8,9 @@ import ch.qos.logback.classic.encoder.PatternLayoutEncoder
 import ch.qos.logback.core.ConsoleAppender
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.main
+import com.github.ajalt.clikt.parameters.arguments.argument
+import com.github.ajalt.clikt.parameters.arguments.multiple
+import com.github.ajalt.clikt.parameters.types.file
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -21,54 +24,51 @@ import moe.reimu.jadxsrv.model.LsResponse
 import org.slf4j.LoggerFactory
 import io.ktor.server.response.*
 import io.ktor.server.routing.IgnoreTrailingSlash
-import io.ktor.server.routing.post
-import io.ktor.server.routing.route
 import moe.reimu.jadxsrv.model.StatResponse
 import org.slf4j.event.Level
 
 private val logger = LoggerFactory.getLogger("jadxsrv")
 
 class App : CliktCommand() {
+    private val inputFiles by argument("input").file(mustExist = true, canBeDir = false).multiple(required = true)
+
     override fun run() {
         configureLogging()
         logger.info("Starting...")
 
-        embeddedServer(Netty, 28080) {
-            install(CallLogging) {
-                level = Level.INFO
-            }
+        val decompiler = loadDecompiler(inputFiles)
 
-            install(ContentNegotiation) {
-                json(Json {
-                    isLenient = true
-                    encodeDefaults = true
-                })
-            }
+        try {
+            embeddedServer(Netty, 28080) {
+                install(CallLogging) {
+                    level = Level.INFO
+                }
 
-            install(IgnoreTrailingSlash)
+                install(ContentNegotiation) {
+                    json(Json {
+                        isLenient = true
+                        encodeDefaults = true
+                    })
+                }
 
-            routing {
-                route("/{encodedFilePaths}") {
+                install(IgnoreTrailingSlash)
+
+                routing {
                     get("/ls") {
-                        getDecompiler()
                         call.respond(LsResponse(dirs = listOf("classes", "resources")))
                     }
                     get("/stat") {
-                        getDecompiler()
                         call.respond(StatResponse(type = StatResponse.TYPE_DIR))
                     }
-                    post("/close") {
-                        Decompilers.closeDecompiler(
-                            call.parameters["encodedFilePaths"]!!
-                        )
-                    }
 
-                    classesRoutes()
-                    resourcesRoutes()
-                    searchRoutes()
+                    classesRoutes(decompiler)
+                    resourcesRoutes(decompiler)
+                    searchRoutes(decompiler)
                 }
-            }
-        }.start(wait = true)
+            }.start(wait = true)
+        } finally {
+            decompiler.close()
+        }
     }
 }
 
@@ -92,6 +92,3 @@ fun configureLogging() {
     rootLogger.addAppender(consoleAppender)
     rootLogger.level = ch.qos.logback.classic.Level.INFO
 }
-
-
-

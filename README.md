@@ -16,24 +16,22 @@ system), rather than as an end-user application on its own.
 # Build (compiles, tests, and assembles a jar)
 ./gradlew build
 
-# Run the server directly
-./gradlew run
+# Run the server directly with one or more APK, JAR, or DEX inputs
+./gradlew run --args="/absolute/path/to/app.apk"
 ```
 
 The server listens on `http://0.0.0.0:28080`.
 
 ## How it works
 
-Every route is nested under `/{encodedFilePaths}`, where `encodedFilePaths` is a `;`-separated list of
-Base64url-encoded absolute file paths to the input file(s) to decompile (an APK, JAR, DEX, or a combination
-thereof). The first request for a given `encodedFilePaths` value lazily creates and caches a `JadxDecompiler`
-instance; subsequent requests reuse it until it's explicitly released with:
+Input files are positional CLI arguments. Supply one or more absolute or relative APK, JAR, or DEX paths when
+starting the server:
 
-```
-POST /{encodedFilePaths}/close
+```bash
+./gradlew run --args="/path/to/app.apk /path/to/classes.dex"
 ```
 
-Within that scope, the API exposes two virtual top-level directories:
+The server initializes one `JadxDecompiler` for those files, then exposes two virtual top-level directories:
 
 - **`classes`** — the decompiled package/class tree
 - **`resources`** — app resources, including entries unpacked from the APK's resource table (`.arsc`)
@@ -42,27 +40,27 @@ Each supports a common set of operations:
 
 | Route | Description |
 |---|---|
-| `GET /{encodedFilePaths}/ls/classes/{path...}` | List contents of a directory/package |
-| `GET /{encodedFilePaths}/stat/classes/{path...}` | Get metadata (file vs. directory, size) for a path |
-| `GET /{encodedFilePaths}/read/classes/{path...}` | Read decompiled source / resource content |
-| `GET /{encodedFilePaths}/annotation/classes/{path...}?offset=` | Get hover/type info at a character offset |
-| `GET /{encodedFilePaths}/definition/classes/{path...}?offset=` | Resolve go-to-definition at a character offset |
-| `GET /{encodedFilePaths}/outline/classes/{path...}` | Get a symbol outline (classes/methods/fields) for a class |
-| `GET /{encodedFilePaths}/refs/classes/{path...}?offset=` | Find references/usages of the symbol at an offset |
+| `GET /ls/classes/{path...}` | List contents of a directory/package |
+| `GET /stat/classes/{path...}` | Get metadata (file vs. directory, size) for a path |
+| `GET /read/classes/{path...}` | Read decompiled source / resource content |
+| `GET /annotation/classes/{path...}?offset=` | Get hover/type info at a character offset |
+| `GET /definition/classes/{path...}?offset=` | Resolve go-to-definition at a character offset |
+| `GET /outline/classes/{path...}` | Get a symbol outline (classes/methods/fields) for a class |
+| `GET /refs/classes/{path...}?offset=` | Find references/usages of the symbol at an offset |
 
 (`resources` supports the same `ls`/`stat`/`read`/`annotation`/`definition` routes, but not `outline`/`refs`.)
 
 Additionally, a streaming search endpoint is available:
 
-- `POST /{encodedFilePaths}/search/{taskId}?query=&types=&limit=&ignoreCase=` — streams matching
+- `POST /search/{taskId}?query=&types=&limit=&ignoreCase=` — streams matching
   classes/methods/fields/text as newline-delimited JSON. `types` is a comma-separated subset of
   `class,method,field,text`.
-- `DELETE /{encodedFilePaths}/search/{taskId}` — cancels an in-flight search by task ID.
+- `DELETE /search/{taskId}` — cancels an in-flight search by task ID.
 
 ## Project layout
 
 - `Main.kt` — CLI entrypoint and Ktor server/route setup
-- `Decompilers.kt` — decompiler instance cache, keyed by `encodedFilePaths`
+- `Decompilers.kt` — shared decompiler lifecycle
 - `ClassesRoutes.kt` — package/class browsing, outline, and references
 - `ResourcesRoutes.kt` — resource browsing and the `.arsc` resource table
 - `SearchRoutes.kt` — cancellable streaming search

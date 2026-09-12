@@ -30,17 +30,17 @@ private val logger = LoggerFactory.getLogger("jadxsrv.classes")
 object RootPath
 
 @Suppress("UnstableApiUsage")
-fun Route.classesRoutes() {
+fun Route.classesRoutes(decompiler: Decompiler) {
 
     route("/ls") {
         get("/classes") {
-            val dirs = getDecompiler().jadx.packages.filter { it.pkgNode.parentPkg == null }.map { it.name }
+            val dirs = decompiler.jadx.packages.filter { it.pkgNode.parentPkg == null }.map { it.name }
             call.respond(LsResponse(dirs = dirs))
         }
 
         get("/classes/{path...}") {
             val pathParts = getCleanPath()
-            val resolved = resolvePath(getDecompiler().jadx, pathParts)
+            val resolved = resolvePath(decompiler.jadx, pathParts)
             when (resolved) {
                 is JavaPackage -> {
                     val dirs = resolved.subPackages.map { it.name }
@@ -63,7 +63,7 @@ fun Route.classesRoutes() {
 
         get("/classes/{path...}") {
             val pathParts = getCleanPath()
-            val resolved = resolvePath(getDecompiler().jadx, pathParts)
+            val resolved = resolvePath(decompiler.jadx, pathParts)
             when (resolved) {
                 is RootPath -> {
                     call.respond(StatResponse(type = StatResponse.TYPE_DIR))
@@ -82,7 +82,7 @@ fun Route.classesRoutes() {
 
     get("/read/classes/{path...}") {
         val pathParts = getCleanPath()
-        val resolved = resolvePath(getDecompiler().jadx, pathParts)
+        val resolved = resolvePath(decompiler.jadx, pathParts)
         when (resolved) {
             is JavaClass -> {
                 call.respondText(
@@ -95,7 +95,7 @@ fun Route.classesRoutes() {
         val pathParts = getCleanPath()
         val offset = getOffsetInt()
 
-        val resolved = resolvePath(getDecompiler().jadx, pathParts)
+        val resolved = resolvePath(decompiler.jadx, pathParts)
         when (resolved) {
             is JavaClass -> {
                 resolved.decompile()
@@ -114,7 +114,7 @@ fun Route.classesRoutes() {
         val pathParts = getCleanPath()
         val offset = getOffsetInt()
 
-        val resolved = resolvePath(getDecompiler().jadx, pathParts)
+        val resolved = resolvePath(decompiler.jadx, pathParts)
         if (resolved !is JavaClass) {
             call.respond(DefinitionResponse())
             return@get
@@ -133,7 +133,7 @@ fun Route.classesRoutes() {
     get("/outline/classes/{path...}") {
         val pathParts = getCleanPath()
 
-        val resolved = resolvePath(getDecompiler().jadx, pathParts)
+        val resolved = resolvePath(decompiler.jadx, pathParts)
         if (resolved !is JavaClass) {
             call.respond(OutlineResponse())
             return@get
@@ -146,7 +146,7 @@ fun Route.classesRoutes() {
         val pathParts = getCleanPath()
         val offset = getOffsetInt()
 
-        val resolved = resolvePath(getDecompiler().jadx, pathParts)
+        val resolved = resolvePath(decompiler.jadx, pathParts)
         if (resolved !is JavaClass) {
             call.respond(RefsResponse())
             return@get
