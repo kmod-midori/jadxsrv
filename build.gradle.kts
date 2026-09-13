@@ -37,6 +37,8 @@ dependencies {
 
     implementation("com.github.ajalt.clikt:clikt:5.0.1")
 
+    implementation("io.modelcontextprotocol:kotlin-sdk-server:0.15.0")
+
     testImplementation(kotlin("test"))
 }
 

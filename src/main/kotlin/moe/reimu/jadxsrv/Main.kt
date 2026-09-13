@@ -28,6 +28,7 @@ import moe.reimu.jadxsrv.model.LsResponse
 import org.slf4j.LoggerFactory
 import io.ktor.server.response.*
 import io.ktor.server.routing.IgnoreTrailingSlash
+import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import moe.reimu.jadxsrv.model.StatResponse
 import org.slf4j.event.Level
 
@@ -49,8 +50,9 @@ class App : CliktCommand() {
         logger.info("Starting...")
 
         val decompiler = loadDecompiler(inputFiles, codeData)
+        val mcpServer = createMcpServer(decompiler, version = javaClass.`package`.implementationVersion ?: "dev")
 
-        logger.info("Listening on port {}", port)
+        logger.info("Listening on port {} (REST API + MCP endpoint at /mcp)", port)
 
         try {
             embeddedServer(Netty, port) {
@@ -81,6 +83,8 @@ class App : CliktCommand() {
                     callHierarchyRoutes(decompiler)
                     typeHierarchyRoutes(decompiler)
                 }
+
+                mcpStreamableHttp(path = "/mcp") { mcpServer }
             }.start(wait = true)
         } finally {
             decompiler.close()

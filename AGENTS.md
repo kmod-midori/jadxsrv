@@ -1,9 +1,14 @@
 # jadxsrv
 
 A Kotlin/Ktor HTTP server that wraps the [jadx](https://github.com/skylot/jadx) decompiler library, exposing
-APK/DEX/JAR decompilation over a filesystem-like REST API (list/stat/read/annotation/definition/references/search).
-It is designed to be consumed by an editor extension that treats a decompiled app as a virtual, read-only file
-system (paths encode which package/class/resource is being browsed).
+APK/DEX/JAR decompilation over two interfaces sharing one `Decompiler`:
+
+- a filesystem-like REST API (list/stat/read/annotation/definition/references/search), consumed by an editor
+  extension that treats a decompiled app as a virtual, read-only file system (paths encode which
+  package/class/resource is being browsed);
+- an MCP server (Streamable HTTP at `/mcp`, via `io.modelcontextprotocol:kotlin-sdk`), modeled after
+  jadx-mcp-server minus its debugger tools, for LLM clients. The REST API must stay intact — the VSCode
+  extension depends on it.
 
 ## Build, run, test
 
@@ -78,6 +83,21 @@ Input files are supplied as positional CLI arguments at server startup (see `App
   per request. Supertypes resolve via `RootNode.resolveClass(ArgType)` (types
   not in the inputs, e.g. java.lang.Object, drop out); subtypes scan
   `root.classes` for raw-name matches.
+- MCP tools (`McpServer.kt`): one shared `Server` instance is returned for every
+  MCP session from `mcpStreamableHttp(path = "/mcp")` in `Main.kt`; tool calls are
+  serialized through a `Mutex` because jadx decompilation is not thread-safe, and
+  tool-level failures are returned as `CallToolResult(isError = true)` (never as
+  protocol errors). Node lookup for the name-based MCP tools matches jadx's
+  `classInfo.aliasFullName`/`rawName` (and for methods, `methodInfo.name`), which
+  is a different resolution strategy than the REST routes' URL paths.
+- `Main.kt` installs `ContentNegotiation` before `mcpStreamableHttp`, and the SDK
+  logs a warning about that (it would install its own `McpJson` otherwise); this
+  is expected — our `Json { isLenient = true; encodeDefaults = true }` serializes
+  the MCP wire types correctly, and both route families must stay on one port.
+- The rename mutation + reload + optional `--code-data` persistence lives in
+  `applyRename` (`RenameSupport.kt`), shared by the REST `/rename` route and the
+  MCP rename tools; `renameNode` additionally refreshes affected classes for
+  name-based renames. Keep both entry points' behavior aligned there.
 - defPosition gotcha: `JavaClass.decompile()` (its `load()`) skips codegen for
   classes already processed as dependencies of another class' codegen, so
   their `defPosition`/`codeMetadata` annotations are never set and stay 0

@@ -37,9 +37,6 @@ import moe.reimu.jadxsrv.model.RenameRequest
 import moe.reimu.jadxsrv.model.RenameInfoResponse
 import moe.reimu.jadxsrv.model.RenameResponse
 import moe.reimu.jadxsrv.model.StatResponse
-import org.slf4j.LoggerFactory
-
-private val logger = LoggerFactory.getLogger("jadxsrv.classes")
 
 object RootPath
 
@@ -206,29 +203,9 @@ fun Route.classesRoutes(decompiler: Decompiler) {
             }
         }
 
-        synchronized(decompiler) {
-            val renames = decompiler.codeData.renames.toMutableSet()
-            val rename = renameTarget.rename
-            rename.newName = newName
-            renames.remove(rename)
-            if (newName.isEmpty()) {
-                renameTarget.node.removeAlias()
-            } else {
-                renames.add(rename)
-            }
-            decompiler.codeData.renames = renames.sorted()
-            decompiler.jadx.args.codeData = decompiler.codeData
-            decompiler.jadx.reloadCodeData()
-
-            decompiler.codeDataPath?.let { path ->
-                try {
-                    saveCodeData(path, decompiler.codeData)
-                } catch (e: Exception) {
-                    // Don't fail the rename over a failed save; log loudly instead.
-                    logger.error("Failed to save code data to {}", path, e)
-                }
-            }
-        }
+        val rename = renameTarget.rename
+        rename.newName = newName
+        applyRename(decompiler, rename, renameTarget.node)
 
         val javaVar = renameTarget.node as? JavaVariable
         if (javaVar != null) {
@@ -337,7 +314,7 @@ private fun resolveRenameTarget(decompiler: Decompiler, cls: JavaClass, offset: 
  * (and, for methods, override-related methods and their callers). Classes are
  * unloaded so the next read re-decompiles them on demand.
  */
-private fun refreshAffectedClasses(node: JavaNode) {
+internal fun refreshAffectedClasses(node: JavaNode) {
     val toUpdate = mutableListOf<JavaNode>()
     when (node) {
         is JavaVariable -> toUpdate.add(node.mth)

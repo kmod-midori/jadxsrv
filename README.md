@@ -1,9 +1,16 @@
 # jadxsrv
 
 `jadxsrv` is a small Kotlin/Ktor HTTP server that wraps the [jadx](https://github.com/skylot/jadx) Android
-decompiler and exposes it as a filesystem-like REST API. It's meant to be used as a backend for editor
-tooling (e.g. an extension that browses a decompiled APK/DEX/JAR as if it were a read-only virtual file
-system), rather than as an end-user application on its own.
+decompiler and exposes it as two interfaces:
+
+- a filesystem-like REST API, meant to be used as a backend for editor tooling (e.g. an extension that
+  browses a decompiled APK/DEX/JAR as if it were a read-only virtual file system);
+- an [MCP](https://modelcontextprotocol.io) server (Streamable HTTP at `/mcp`, built on
+  `io.modelcontextprotocol:kotlin-sdk`) exposing jadx as analysis tools for LLM clients, modeled after
+  [jadx-mcp-server](https://github.com/zinja-coder/jadx-ai-mcp) (minus its debugger tools).
+
+Both run on the same port against the same decompiler instance, so renames/aliases made through one
+interface are visible in the other.
 
 ## Requirements
 
@@ -30,6 +37,41 @@ change it:
 ```bash
 ./run.sh --port 9000 /absolute/path/to/app.apk
 ```
+
+## MCP endpoint
+
+The MCP endpoint is served alongside the REST API at `http://<host>:<port>/mcp`
+(Streamable HTTP transport, one shared jadx-backed `Server` for all sessions).
+Point any MCP client that supports Streamable HTTP at it, e.g.:
+
+```json
+{
+  "mcpServers": {
+    "jadxsrv": {
+      "type": "http",
+      "url": "http://localhost:28080/mcp"
+    }
+  }
+}
+```
+
+Tools exposed (see `McpServer.kt`):
+
+| Tool | Description |
+|---|---|
+| `list_classes` | Paginated list of all classes |
+| `get_class_source` | Decompiled Java source of a class |
+| `get_methods_of_class` / `get_fields_of_class` | Members of a class with signatures |
+| `search_classes` / `search_methods` | Substring search over names (display and raw/obfuscated) |
+| `search_code` | Full-text search in decompiled code (decompiles on demand; slow at first) |
+| `get_xrefs_to_class` / `get_xrefs_to_method` / `get_xrefs_to_field` | Usage locations with class, line, and snippet |
+| `get_android_manifest` | Decoded AndroidManifest.xml |
+| `list_resource_files` / `get_resource_file` / `get_strings` | Resource browsing (text resources only) |
+| `rename_class` / `rename_method` / `rename_field` | Set/reset deobfuscation aliases (same data and persistence as the REST `/rename` route) |
+
+Class lookup accepts the alias (deobfuscated) or raw full name; ambiguous method
+names can be disambiguated with the `method_id` signature from
+`get_methods_of_class`.
 
 ## How it works
 
@@ -80,10 +122,12 @@ of a jadx-gui `.jadx` project file.
 
 ## Project layout
 
-- `Main.kt` — CLI entrypoint and Ktor server/route setup
+- `Main.kt` — CLI entrypoint and Ktor server/route setup (REST + MCP)
 - `Decompilers.kt` — shared decompiler lifecycle
 - `ClassesRoutes.kt` — package/class browsing, outline, and references
 - `ResourcesRoutes.kt` — resource browsing and the `.arsc` resource table
 - `SearchRoutes.kt` — cancellable streaming search
+- `McpServer.kt` — MCP tool registration (Streamable HTTP at `/mcp`)
+- `RenameSupport.kt` — shared apply/reload/persist logic for renames
 - `Utils.kt` — shared path/annotation/formatting helpers
 - `model/` — `kotlinx.serialization` response DTOs
