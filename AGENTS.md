@@ -49,6 +49,12 @@ Input files are supplied as positional CLI arguments at server startup (see `App
   flow; empty names reset aliases. Variable renames use a `JadxCodeRef.forVar`
   code ref attached to the enclosing method ref (same shape as jadx-gui's
   `JVariable.buildCodeRename`), so they are scoped to one SSA variable.
+- Rename persistence is opt-in via `--code-data <path>` (`CodeDataStore.kt`):
+  loaded at startup (fails fast on a corrupt file so it can't be overwritten
+  empty), saved inside the rename lock after every rename, atomically via
+  write-then-move. The format is byte-compatible with the `codeData` block of
+  a jadx-gui `.jadx` project (same Gson beans/interfaceReplace adapters), so
+  files can be shared with the GUI. Without the flag nothing touches disk.
 - After a rename, `refreshAffectedClasses()` must invalidate decompiled code
   for every class that can show the renamed symbol (the node's own class, its
   `useIn` classes, and for methods the override-related methods and their

@@ -10,7 +10,9 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.main
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.arguments.multiple
+import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.file
+import com.github.ajalt.clikt.parameters.types.path
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -30,13 +32,17 @@ import org.slf4j.event.Level
 private val logger = LoggerFactory.getLogger("jadxsrv")
 
 class App : CliktCommand() {
+    private val codeData by option(
+        "--code-data",
+        help = "Persist renames/comments to this JSON file (jadx-gui's .jadx project codeData format); loaded back on startup"
+    ).path(mustExist = false, canBeDir = false)
     private val inputFiles by argument("input").file(mustExist = true, canBeDir = false).multiple(required = true)
 
     override fun run() {
         configureLogging()
         logger.info("Starting...")
 
-        val decompiler = loadDecompiler(inputFiles)
+        val decompiler = loadDecompiler(inputFiles, codeData)
 
         try {
             embeddedServer(Netty, 28080) {

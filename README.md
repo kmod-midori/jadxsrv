@@ -18,6 +18,10 @@ system), rather than as an end-user application on its own.
 
 # Run the server with one or more APK, JAR, or DEX inputs
 ./run.sh /absolute/path/to/app.apk
+
+# Persist symbol renames to a JSON file across restarts (jadx-gui's
+# .jadx project codeData format; loaded back on startup if it exists)
+./run.sh --code-data /path/to/codedata.json /absolute/path/to/app.apk
 ```
 
 The server listens on `http://0.0.0.0:28080`.
@@ -64,7 +68,10 @@ Additionally, a streaming search endpoint is available:
 
 Symbol renames use the same JADX alias data and reload flow as the GUI. Send a
 JSON body such as `{"name":"betterName"}`; an empty name resets the alias.
-Renames last for the running server session.
+Renames last for the running server session unless `--code-data <file>` was
+passed, in which case they are saved after every rename (atomically, via a
+temp file) and loaded back on startup. The JSON matches the `codeData` block
+of a jadx-gui `.jadx` project file.
 
 ## Project layout
 

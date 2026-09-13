@@ -30,6 +30,7 @@ dependencies {
     implementation("io.ktor:ktor-serialization-kotlinx-json")
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("com.google.code.gson:gson:2.14.0")
 
     implementation("ch.qos.logback:logback-classic:1.5.13")
     implementation("org.slf4j:slf4j-api:2.0.16")

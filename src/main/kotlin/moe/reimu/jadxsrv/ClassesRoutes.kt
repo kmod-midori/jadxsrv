@@ -219,6 +219,15 @@ fun Route.classesRoutes(decompiler: Decompiler) {
             decompiler.codeData.renames = renames.sorted()
             decompiler.jadx.args.codeData = decompiler.codeData
             decompiler.jadx.reloadCodeData()
+
+            decompiler.codeDataPath?.let { path ->
+                try {
+                    saveCodeData(path, decompiler.codeData)
+                } catch (e: Exception) {
+                    // Don't fail the rename over a failed save; log loudly instead.
+                    logger.error("Failed to save code data to {}", path, e)
+                }
+            }
         }
 
         val javaVar = renameTarget.node as? JavaVariable
