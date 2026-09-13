@@ -16,6 +16,7 @@ import jadx.api.metadata.ICodeAnnotation
 import jadx.api.metadata.annotations.NodeDeclareRef
 import jadx.api.metadata.annotations.VarNode
 import jadx.core.deobf.NameMapper
+import jadx.core.dex.attributes.AType
 import jadx.core.dex.nodes.ClassNode
 import jadx.core.dex.nodes.FieldNode
 import jadx.core.dex.nodes.MethodNode
@@ -94,14 +95,26 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
     }
 
     /**
-     * Locates a method by display or raw name; throws with guidance when the
-     * name is unknown or the overloads need a `method_id` shortId.
+     * Locates a method, accepting a display/raw name, or a full shortId/fullId
+     * signature in either `method_name` or `method_id`; throws with guidance
+     * when the name is unknown or overloads remain ambiguous.
      */
     fun findMethod(cls: JavaClass, methodName: String, methodId: String?): JavaMethod {
-        val candidates = cls.methods.filter {
+        fun JavaMethod.signatureMatches(signature: String): Boolean =
+            methodNode.methodInfo.shortId == signature || methodNode.methodInfo.fullId == signature
+
+        var candidates = cls.methods.filter {
             it.name == methodName || it.methodNode.methodInfo.name == methodName
-        }.let { matched ->
-            if (methodId != null) matched.filter { it.methodNode.methodInfo.shortId == methodId } else matched
+        }
+        if (candidates.isEmpty()) {
+            // LLM clients often pass the full "name(args)ret" suggested by the
+            // ambiguity error as method_name — match it as a signature. (A name
+            // can never accidentally equal a signature: names are Java
+            // identifiers, signatures always contain '('.)
+            candidates = cls.methods.filter { it.signatureMatches(methodName) }
+        }
+        if (methodId != null && candidates.size != 1) {
+            candidates = candidates.filter { it.signatureMatches(methodId) }
         }
         return when (candidates.size) {
             1 -> candidates.first()
@@ -271,7 +284,7 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         inputSchema = schema(
             mapOf(
                 classNameProp,
-                "method_name" to strProp("Method name (display or raw)"),
+                "method_name" to strProp("Method name (display or raw), or a full name(args)ret signature"),
                 "method_id" to strProp("Optional method signature shortId to disambiguate overloads"),
             ),
             listOf("class_name", "method_name"),
@@ -285,14 +298,11 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
                 args.str("method_name") ?: throw IllegalArgumentException("Missing required argument: method_name"),
                 args.str("method_id"),
             )
-            // Access codeInfo first: forces codegen for classes processed as
-            // dependencies — otherwise defPosition stays 0 (see outline route).
-            val top = mth.topParentClass
-            top.codeInfo
-            val source = top.code
             textResult(
-                extractMethodCode(source, mth.methodNode.defPosition)
-                    ?: throw IllegalStateException("Failed to locate method body in decompiled code"),
+                extractMethodCode(mth)
+                    ?: throw IllegalStateException(
+                        "Method is not present in the decompiled output (empty constructors and inlined/replaced methods are not generated)",
+                    ),
             )
         }
     }
@@ -378,7 +388,7 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
 
     server.addTool(
         name = "search_code",
-        description = "Full-text search in decompiled class code. Note: classes decompiled on demand, so this can be slow on first searches.",
+        description = "Full-text search in decompiled class code. EXPENSIVE LAST RESORT: it decompiles every class on demand and can take very long. Avoid unless absolutely necessary — prefer search_classes/search_methods to locate a symbol by name, then get_xrefs_to_class/method/field to see where it is used. Use search_code only when you have neither a class/method name to search for nor a known symbol in the code path you want to find.",
         inputSchema = schema(
             mapOf(
                 "query" to strProp("Text to search for in the decompiled code"),
@@ -440,7 +450,7 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         inputSchema = schema(
             mapOf(
                 classNameProp,
-                "method_name" to strProp("Method name (display or raw)"),
+                "method_name" to strProp("Method name (display or raw), or a full name(args)ret signature"),
                 "method_id" to strProp("Optional method signature shortId, e.g. onCreate(Landroid/os/Bundle;)V, to disambiguate overloads"),
                 "limit" to intProp("Max usages (default $DEFAULT_LIMIT)"),
             ),
@@ -784,7 +794,7 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         inputSchema = schema(
             mapOf(
                 classNameProp,
-                "method_name" to strProp("Current method name (display or raw)"),
+                "method_name" to strProp("Current method name (display or raw), or a full name(args)ret signature"),
                 "method_id" to strProp("Optional signature shortId to disambiguate overloads"),
                 "new_name" to strProp("New method name (valid Java identifier), or empty to reset"),
             ),
@@ -845,7 +855,7 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         inputSchema = schema(
             mapOf(
                 classNameProp,
-                "method_name" to strProp("Method name (display or raw)"),
+                "method_name" to strProp("Method name (display or raw), or a full name(args)ret signature"),
                 "method_id" to strProp("Optional method signature shortId to disambiguate overloads"),
                 "variable_name" to strProp("Current variable/argument name"),
                 "new_name" to strProp("New variable name (valid Java identifier), or empty to reset"),
@@ -913,77 +923,70 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
 private fun NodeList.asList(): List<Node> = (0 until length).map(::item)
 
 /**
- * Extracts one method's source from the decompiled text of its top-level
- * class, starting at the method's defPosition. Handles the method body like a
- * mini lexer (skips comments, string, and char literals) so braces inside
- * them don't confuse the matching; returns the declaration (e.g.
- * abstract/native methods) as-is when there is no body.
+ * Extracts one method's source from the decompiled code of its top-level
+ * class using jadx's code metadata annotations: scan down from the method's
+ * defPos, tracking DECLARATION/END annotation nesting, until the method's own
+ * END closes it. Unlike text-based
+ * annotation nesting, until the method's own END closes it. Unlike text-based
+ * brace matching, this is immune to braces inside strings and comments, and it
+ * also covers bodiless (abstract/native) methods which end after the
+ * declaration.
  */
-internal fun extractMethodCode(source: String, defPosition: Int): String? {
-    if (defPosition < 0 || defPosition >= source.length) {
+internal fun extractMethodCode(method: JavaMethod): String? {
+    var mth = method
+    if (mth.methodNode.contains(AType.METHOD_REPLACE)) {
+        val replaced = mth.methodNode.get(AType.METHOD_REPLACE)
+        if (replaced != null) {
+            mth = replaced.replaceMth.javaNode
+        }
+    }
+
+    // Access codeInfo (not just code): forces codegen for classes processed as
+    // dependencies — otherwise defPos stays 0 (see outline route).
+    val codeInfo = mth.topParentClass.codeInfo
+    val codeStr = codeInfo.codeStr
+    val codeMeta = codeInfo.codeMetadata
+
+    val startPos = mth.defPos
+    if (startPos <= 0) {
         return null
     }
-    val declStart = source.lastIndexOf('\n', defPosition).let { if (it == -1) 0 else it + 1 }
 
-    var i = defPosition
-    while (i < source.length) {
-        when (source[i]) {
-            ';' -> return source.substring(declStart, i + 1)
-            '{' -> {
-                val end = findMatchingBrace(source, i) ?: return null
-                return source.substring(declStart, end + 1)
+    var nesting = 0
+    val endPos = codeMeta.searchDown(startPos) { pos, annotation ->
+        when (annotation.annType) {
+            ICodeAnnotation.AnnType.END -> {
+                nesting--
+                if (nesting == 0) {
+                    return@searchDown pos
+                }
             }
 
-            '/' -> i = skipComment(source, i)
-            '"' -> i = skipLiteral(source, i, '"')
-            '\'' -> i = skipLiteral(source, i, '\'')
-        }
-        i++
-    }
-    return null
-}
-
-private fun findMatchingBrace(source: String, openBrace: Int): Int? {
-    var depth = 0
-    var i = openBrace
-    while (i < source.length) {
-        when (source[i]) {
-            '{' -> depth++
-            '}' -> {
-                depth--
-                if (depth == 0) return i
+            ICodeAnnotation.AnnType.DECLARATION -> {
+                val node = (annotation as NodeDeclareRef).node
+                if (node.annType == ICodeAnnotation.AnnType.CLASS || node.annType == ICodeAnnotation.AnnType.METHOD) {
+                    nesting++
+                }
             }
 
-            '/' -> i = skipComment(source, i)
-            '"' -> i = skipLiteral(source, i, '"')
-            '\'' -> i = skipLiteral(source, i, '\'')
+            else -> {}
         }
-        i++
-    }
-    return null
+        null
+    } ?: return null
+
+    val lines = codeStr.split("\n")
+    val startLine = codeStr.substring(0, startPos).count { it == '\n' }
+    val endLine = codeStr.substring(0, endPos).count { it == '\n' }
+    return dedentText(lines.subList(startLine, endLine + 1).joinToString("\n"))
 }
 
-/** Skips past a / start when it opens a comment; returns the index to resume scanning at. */
-private fun skipComment(source: String, i: Int): Int {
-    val next = source.getOrNull(i + 1) ?: return i
-    return when (next) {
-        '/' -> source.indexOf('\n', i + 2).let { if (it == -1) source.length else it }
-        '*' -> source.indexOf("*/", i + 2).let { if (it == -1) source.length else it + 1 }
-        else -> i
+private fun dedentText(text: String): String {
+    val lines = text.lines()
+    if (lines.isEmpty()) {
+        return ""
     }
-}
-
-/** Skips past a string/char literal starting at the opening quote in [i]. */
-private fun skipLiteral(source: String, i: Int, quote: Char): Int {
-    var j = i + 1
-    while (j < source.length) {
-        when (source[j]) {
-            '\\' -> j++
-            quote -> return j
-        }
-        j++
-    }
-    return source.length
+    val indent = lines.first().takeWhile { it.isWhitespace() }
+    return lines.joinToString("\n") { it.removePrefix(indent) }
 }
 
 private inline fun <T> JsonObjectBuilder.putJsonArrayOf(
