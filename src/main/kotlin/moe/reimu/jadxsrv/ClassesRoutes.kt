@@ -153,7 +153,10 @@ fun Route.classesRoutes(decompiler: Decompiler) {
             return@get
         }
 
-        resolved.decompile()
+        // Access codeInfo (not just decompile()) to force codegen for classes
+        // that were already processed as dependencies — otherwise defPositions
+        // are never set and the outline reports all-zero byteOffsets.
+        resolved.codeInfo
         call.respond(OutlineResponse(classToSymbol(resolved.classNode)))
     }
     get("/rename/classes/{path...}") {

@@ -48,6 +48,10 @@ Each supports a common set of operations:
 | `GET /outline/classes/{path...}` | Get a symbol outline (classes/methods/fields) for a class |
 | `GET /refs/classes/{path...}?offset=` | Find references/usages of the symbol at an offset |
 | `POST /rename/classes/{path...}?offset=` | Rename or reset a class, method, or field alias at an offset |
+| `GET /typehierarchy/classes/{path...}?offset=` | Resolve the class at an offset into a type hierarchy item |
+| `GET /typehierarchy/resources/{path...}?offset=` | Same, resolving a class name in an XML resource |
+| `GET /typehierarchy/supertypes/classes/{path...}?offset=` | Direct superclasses and implemented interfaces of the class at an offset |
+| `GET /typehierarchy/subtypes/classes/{path...}?offset=` | Direct subclasses and implementors of the class at an offset |
 
 (`resources` supports the same `ls`/`stat`/`read`/`annotation`/`definition` routes, but not `outline`/`refs`.)
 

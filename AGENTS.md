@@ -64,6 +64,20 @@ Input files are supplied as positional CLI arguments at server startup (see `App
   merges bridge methods into one source method and codegen can leave stale
   instances in `useIn`/annotations, so stricter comparisons silently miss
   results.
+- `GET /typehierarchy[/supertypes|/subtypes]/classes/{path...}?offset=`
+  (`TypeHierarchyRoutes.kt`, plus a `/typehierarchy/resources/{path...}`
+  prepare variant for class names in XML resources) backs the editor's
+  type hierarchy: direct
+  superclass/interfaces and direct subclasses/implementors, walked one level
+  per request. Supertypes resolve via `RootNode.resolveClass(ArgType)` (types
+  not in the inputs, e.g. java.lang.Object, drop out); subtypes scan
+  `root.classes` for raw-name matches.
+- defPosition gotcha: `JavaClass.decompile()` (its `load()`) skips codegen for
+  classes already processed as dependencies of another class' codegen, so
+  their `defPosition`/`codeMetadata` annotations are never set and stay 0
+  forever. Any code reading `defPosition` must first force codegen through
+  `codeInfo` (as `TypeHierarchyRoutes.classToItem` and the `outline` route
+  do), never rely on `decompile()` alone.
 
 ## Conventions
 
