@@ -11,7 +11,10 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import jadx.api.JavaClass
 import jadx.api.JavaMethod
+import jadx.api.JavaVariable
 import jadx.api.metadata.ICodeAnnotation
+import jadx.api.metadata.annotations.NodeDeclareRef
+import jadx.api.metadata.annotations.VarNode
 import jadx.core.deobf.NameMapper
 import jadx.core.dex.nodes.ClassNode
 import jadx.core.dex.nodes.FieldNode
@@ -30,6 +33,10 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+import org.w3c.dom.Element
+import org.w3c.dom.Node
+import org.w3c.dom.NodeList
+import javax.xml.parsers.DocumentBuilderFactory
 
 private val logger = LoggerFactory.getLogger("jadxsrv.mcp")
 
@@ -84,6 +91,26 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         val name = args.str("class_name")
             ?: throw IllegalArgumentException("Missing required argument: class_name")
         return findClass(name) ?: throw IllegalArgumentException("Class not found: $name")
+    }
+
+    /**
+     * Locates a method by display or raw name; throws with guidance when the
+     * name is unknown or the overloads need a `method_id` shortId.
+     */
+    fun findMethod(cls: JavaClass, methodName: String, methodId: String?): JavaMethod {
+        val candidates = cls.methods.filter {
+            it.name == methodName || it.methodNode.methodInfo.name == methodName
+        }.let { matched ->
+            if (methodId != null) matched.filter { it.methodNode.methodInfo.shortId == methodId } else matched
+        }
+        return when (candidates.size) {
+            1 -> candidates.first()
+            0 -> throw IllegalArgumentException("Method not found: $methodName in ${cls.fullName}")
+            else -> throw IllegalArgumentException(
+                "Ambiguous method name '$methodName'; pass method_id, one of: " +
+                    candidates.joinToString(", ") { it.methodNode.methodInfo.shortId },
+            )
+        }
     }
 
     fun matchesName(display: String, raw: String, query: String, ignoreCase: Boolean): Boolean =
@@ -235,6 +262,38 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
                     put("declaration", formatField(field.fieldNode, true))
                 }
             })
+        }
+    }
+
+    server.addTool(
+        name = "get_method_by_name",
+        description = "Get the decompiled source of a single method, extracted from the enclosing class. On overloaded names pass method_id to pick one.",
+        inputSchema = schema(
+            mapOf(
+                classNameProp,
+                "method_name" to strProp("Method name (display or raw)"),
+                "method_id" to strProp("Optional method signature shortId to disambiguate overloads"),
+            ),
+            listOf("class_name", "method_name"),
+        ),
+    ) { request ->
+        runTool {
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val cls = requireClass(args)
+            val mth = findMethod(
+                cls,
+                args.str("method_name") ?: throw IllegalArgumentException("Missing required argument: method_name"),
+                args.str("method_id"),
+            )
+            // Access codeInfo first: forces codegen for classes processed as
+            // dependencies — otherwise defPosition stays 0 (see outline route).
+            val top = mth.topParentClass
+            top.codeInfo
+            val source = top.code
+            textResult(
+                extractMethodCode(source, mth.methodNode.defPosition)
+                    ?: throw IllegalStateException("Failed to locate method body in decompiled code"),
+            )
         }
     }
 
@@ -391,22 +450,11 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         runTool {
             val args = request.arguments ?: JsonObject(emptyMap())
             val cls = requireClass(args)
-            val methodName = args.str("method_name")
-                ?: throw IllegalArgumentException("Missing required argument: method_name")
-            val methodId = args.str("method_id")
-            val candidates = cls.methods.filter {
-                it.name == methodName || it.methodNode.methodInfo.name == methodName
-            }.let { matched ->
-                if (methodId != null) matched.filter { it.methodNode.methodInfo.shortId == methodId } else matched
-            }
-            val mth = when (candidates.size) {
-                1 -> candidates.first()
-                0 -> throw IllegalArgumentException("Method not found: $methodName in ${cls.fullName}")
-                else -> throw IllegalArgumentException(
-                    "Ambiguous method name '$methodName'; pass method_id, one of: " +
-                        candidates.joinToString(", ") { it.methodNode.methodInfo.shortId },
-                )
-            }
+            val mth = findMethod(
+                cls,
+                args.str("method_name") ?: throw IllegalArgumentException("Missing required argument: method_name"),
+                args.str("method_id"),
+            )
             jsonResult(collectXrefs(mth.methodNode, limitOf(args)))
         }
     }
@@ -454,6 +502,197 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         inputSchema = schema(emptyMap()),
     ) {
         runTool { textResult(loadTextResource("AndroidManifest.xml")) }
+    }
+
+    // --- Manifest (parsed views of AndroidManifest.xml) ----------------------
+
+    val componentTypes = listOf("activity", "activity-alias", "service", "receiver", "provider")
+
+    /** Returns the package attribute and root element of the decoded manifest. */
+    fun parseManifest(): Pair<String, Element> {
+        val xml = loadTextResource("AndroidManifest.xml")
+        val factory = DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = true
+            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
+            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+        }
+        val root = factory.newDocumentBuilder().parse(xml.byteInputStream()).documentElement
+        return root.getAttribute("package") to root
+    }
+
+    fun Element.androidAttr(name: String): String? =
+        getAttributeNS("http://schemas.android.com/apk/res/android", name)
+            .ifEmpty { getAttribute("android:$name") }
+            .ifEmpty { null }
+
+    fun Element.directChildren(tagName: String): List<Element> =
+        childNodes.asList().filterIsInstance<Element>().filter { it.tagName == tagName }
+
+    fun componentElements(root: Element, componentType: String): List<Element> =
+        root.getElementsByTagName(componentType).asList().filterIsInstance<Element>()
+
+    /** Resolves a manifest class attribute against the manifest package. */
+    fun resolveComponentName(pkg: String, name: String): String = when {
+        name.startsWith(".") -> pkg + name
+        name.contains(".") -> name
+        else -> "$pkg.$name"
+    }
+
+    fun appClasses(pkg: String): List<JavaClass> {
+        val prefix = "$pkg."
+        return decompiler.jadx.classesWithInners.filter {
+            it.classNode.classInfo.rawName.startsWith(prefix) ||
+                it.classNode.classInfo.aliasFullName.startsWith(prefix)
+        }
+    }
+
+    server.addTool(
+        name = "get_manifest_component",
+        description = "List components of one type from the AndroidManifest with their exported state. exported is null when the attribute is absent; such components count as exported when they declare an intent-filter.",
+        inputSchema = schema(
+            mapOf(
+                "component_type" to strProp("One of: ${componentTypes.joinToString(", ")}"),
+                "only_exported" to boolProp("Only include exported components (default false)"),
+            ),
+            listOf("component_type"),
+        ),
+    ) { request ->
+        runTool {
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val componentType = args.str("component_type")
+                ?: throw IllegalArgumentException("Missing required argument: component_type")
+            if (componentType !in componentTypes) {
+                throw IllegalArgumentException(
+                    "Unknown component_type '$componentType', expected one of: ${componentTypes.joinToString(", ")}",
+                )
+            }
+            val onlyExported = args.bool("only_exported") ?: false
+            val (pkg, root) = parseManifest()
+
+            data class Component(
+                val name: String,
+                val className: String,
+                val exported: Boolean?,
+                val effectivelyExported: Boolean,
+            )
+
+            val components = componentElements(root, componentType).map { el ->
+                val rawName = el.androidAttr("name") ?: "<missing-name>"
+                val targetName = if (componentType == "activity-alias") {
+                    el.androidAttr("targetActivity") ?: rawName
+                } else {
+                    rawName
+                }
+                val exportedAttr = el.androidAttr("exported")?.let { it == "true" || it == "1" }
+                val hasIntentFilter = el.directChildren("intent-filter").isNotEmpty()
+                Component(
+                    name = rawName,
+                    className = resolveComponentName(pkg, targetName),
+                    exported = exportedAttr,
+                    effectivelyExported = exportedAttr ?: hasIntentFilter,
+                )
+            }.filter { !onlyExported || it.effectivelyExported }
+
+            jsonResult(buildJsonObject {
+                put("package", pkg)
+                put("componentType", componentType)
+                putJsonArrayOf("components", components) { c ->
+                    put("name", c.name)
+                    put("className", c.className)
+                    c.exported?.let { put("exported", it) }
+                    put("effectivelyExported", c.effectivelyExported)
+                }
+            })
+        }
+    }
+
+    server.addTool(
+        name = "get_main_activity_class",
+        description = "Get the app's launcher activity: the activity (or activity-alias target) with an intent-filter for android.intent.action.MAIN + android.intent.category.LAUNCHER.",
+        inputSchema = schema(emptyMap()),
+    ) {
+        runTool {
+            val (pkg, root) = parseManifest()
+
+            fun isLauncher(el: Element): Boolean = el.directChildren("intent-filter").any { filter ->
+                filter.directChildren("action").any { it.androidAttr("name") == "android.intent.action.MAIN" } &&
+                    filter.directChildren("category").any { it.androidAttr("name") == "android.intent.category.LAUNCHER" }
+            }
+
+            for (type in listOf("activity", "activity-alias")) {
+                for (el in componentElements(root, type)) {
+                    if (!isLauncher(el)) continue
+                    val rawName = (if (type == "activity-alias") el.androidAttr("targetActivity") else null)
+                        ?: el.androidAttr("name")
+                    val className = rawName?.let { resolveComponentName(pkg, it) }
+                    return@runTool jsonResult(buildJsonObject {
+                        put("className", className)
+                        put("declaredAs", type)
+                        put("existsInDex", className?.let { findClass(it) != null } ?: false)
+                    })
+                }
+            }
+            jsonResult(buildJsonObject {
+                put("className", null as String?)
+                put("message", "No launcher activity found in the manifest")
+            })
+        }
+    }
+
+    server.addTool(
+        name = "get_main_application_classes_names",
+        description = "List classes that belong to the app's own package (from the AndroidManifest package attribute), excluding library classes. Paginated.",
+        inputSchema = schema(
+            mapOf(
+                "offset" to intProp("Number of classes to skip (default 0)"),
+                "count" to intProp("Max classes to return (default $DEFAULT_LIMIT)"),
+            ),
+        ),
+    ) { request ->
+        runTool {
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val (offset, count) = args.page()
+            val (pkg, _) = parseManifest()
+            val classes = appClasses(pkg)
+            val page = classes.asSequence().drop(offset).let { if (count > 0) it.take(count) else it }.toList()
+            jsonResult(buildJsonObject {
+                put("package", pkg)
+                put("total", classes.size)
+                putJsonArrayOf("classes", page) { cls ->
+                    put("className", cls.classNode.classInfo.aliasFullName)
+                    put("rawClassName", cls.classNode.classInfo.rawName)
+                }
+            })
+        }
+    }
+
+    server.addTool(
+        name = "get_main_application_classes_code",
+        description = "Get the decompiled source of classes in the app's own package. Paginated (defaults to 5 classes per call).",
+        inputSchema = schema(
+            mapOf(
+                "offset" to intProp("Number of classes to skip (default 0)"),
+                "count" to intProp("Max classes to return (default 5)"),
+            ),
+        ),
+    ) { request ->
+        runTool {
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val offset = (args.int("offset") ?: 0).coerceAtLeast(0)
+            val count = (args.int("count") ?: 5).coerceAtLeast(1)
+            val (pkg, _) = parseManifest()
+            val classes = appClasses(pkg)
+            val page = classes.asSequence().drop(offset).take(count).toList()
+            jsonResult(buildJsonObject {
+                put("package", pkg)
+                put("total", classes.size)
+                putJsonArrayOf("classes", page) { cls ->
+                    put("className", cls.classNode.classInfo.aliasFullName)
+                    put("code", cls.code)
+                }
+            })
+        }
     }
 
     server.addTool(
@@ -555,22 +794,11 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         runTool {
             val args = request.arguments ?: JsonObject(emptyMap())
             val cls = requireClass(args)
-            val methodName = args.str("method_name")
-                ?: throw IllegalArgumentException("Missing required argument: method_name")
-            val methodId = args.str("method_id")
-            val candidates = cls.methods.filter {
-                it.name == methodName || it.methodNode.methodInfo.name == methodName
-            }.let { matched ->
-                if (methodId != null) matched.filter { it.methodNode.methodInfo.shortId == methodId } else matched
-            }
-            val mth = when (candidates.size) {
-                1 -> candidates.first()
-                0 -> throw IllegalArgumentException("Method not found: $methodName in ${cls.fullName}")
-                else -> throw IllegalArgumentException(
-                    "Ambiguous method name '$methodName'; pass method_id, one of: " +
-                        candidates.joinToString(", ") { it.methodNode.methodInfo.shortId },
-                )
-            }
+            val mth = findMethod(
+                cls,
+                args.str("method_name") ?: throw IllegalArgumentException("Missing required argument: method_name"),
+                args.str("method_id"),
+            )
             val newName = validateNewName(args)
             val applied = renameNode(decompiler, mth, newName)
             jsonResult(buildJsonObject {
@@ -611,8 +839,151 @@ fun createMcpServer(decompiler: Decompiler, version: String): Server {
         }
     }
 
-    logger.info("MCP server configured with 17 tools")
+    server.addTool(
+        name = "rename_variable",
+        description = "Rename a local variable or method argument, scoped to a single SSA variable within its method (matches jadx-gui's variable rename). Pass reg/ssa to disambiguate variables sharing a name, and an empty new_name to reset.",
+        inputSchema = schema(
+            mapOf(
+                classNameProp,
+                "method_name" to strProp("Method name (display or raw)"),
+                "method_id" to strProp("Optional method signature shortId to disambiguate overloads"),
+                "variable_name" to strProp("Current variable/argument name"),
+                "new_name" to strProp("New variable name (valid Java identifier), or empty to reset"),
+                "reg" to intProp("Optional register number to disambiguate same-named variables"),
+                "ssa" to intProp("Optional SSA version to disambiguate same-named variables"),
+            ),
+            listOf("class_name", "method_name", "variable_name", "new_name"),
+        ),
+    ) { request ->
+        runTool {
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val cls = requireClass(args)
+            val mth = findMethod(
+                cls,
+                args.str("method_name") ?: throw IllegalArgumentException("Missing required argument: method_name"),
+                args.str("method_id"),
+            )
+            val variableName = args.str("variable_name")
+                ?: throw IllegalArgumentException("Missing required argument: variable_name")
+            val reg = args.int("reg")
+            val ssa = args.int("ssa")
+
+            // Variables surface as VarNode entries in the top-level class'
+            // code metadata (same lookup as the REST route's fresh-name scan).
+            val top = mth.topParentClass
+            top.codeInfo
+            val vars = mutableMapOf<Pair<Int, Int>, JavaVariable>()
+            for ((_, annotation) in top.codeInfo.codeMetadata.asMap) {
+                var node = annotation
+                if (node is NodeDeclareRef) {
+                    node = node.node
+                }
+                val varNode = node as? VarNode ?: continue
+                if (varNode.mth !== mth.methodNode || varNode.name != variableName) continue
+                if (reg != null && varNode.reg != reg) continue
+                if (ssa != null && varNode.ssa != ssa) continue
+                vars[varNode.reg to varNode.ssa] = JavaVariable(mth, varNode)
+            }
+
+            val javaVar = when (vars.size) {
+                1 -> vars.values.single()
+                0 -> throw IllegalArgumentException("Variable not found: $variableName in ${mth.name}")
+                else -> throw IllegalArgumentException(
+                    "Ambiguous variable '$variableName'; pass reg/ssa, one of: " +
+                        vars.values.joinToString(", ") { "(reg=${it.reg}, ssa=${it.ssa})" },
+                )
+            }
+
+            val newName = validateNewName(args)
+            val applied = renameVariable(decompiler, javaVar, newName)
+            jsonResult(buildJsonObject {
+                put("className", cls.classNode.classInfo.rawName)
+                put("method", mth.methodNode.methodInfo.shortId)
+                put("reg", javaVar.reg)
+                put("ssa", javaVar.ssa)
+                put("name", applied)
+            })
+        }
+    }
+
+    logger.info("MCP server configured with 23 tools")
     return server
+}
+
+private fun NodeList.asList(): List<Node> = (0 until length).map(::item)
+
+/**
+ * Extracts one method's source from the decompiled text of its top-level
+ * class, starting at the method's defPosition. Handles the method body like a
+ * mini lexer (skips comments, string, and char literals) so braces inside
+ * them don't confuse the matching; returns the declaration (e.g.
+ * abstract/native methods) as-is when there is no body.
+ */
+internal fun extractMethodCode(source: String, defPosition: Int): String? {
+    if (defPosition < 0 || defPosition >= source.length) {
+        return null
+    }
+    val declStart = source.lastIndexOf('\n', defPosition).let { if (it == -1) 0 else it + 1 }
+
+    var i = defPosition
+    while (i < source.length) {
+        when (source[i]) {
+            ';' -> return source.substring(declStart, i + 1)
+            '{' -> {
+                val end = findMatchingBrace(source, i) ?: return null
+                return source.substring(declStart, end + 1)
+            }
+
+            '/' -> i = skipComment(source, i)
+            '"' -> i = skipLiteral(source, i, '"')
+            '\'' -> i = skipLiteral(source, i, '\'')
+        }
+        i++
+    }
+    return null
+}
+
+private fun findMatchingBrace(source: String, openBrace: Int): Int? {
+    var depth = 0
+    var i = openBrace
+    while (i < source.length) {
+        when (source[i]) {
+            '{' -> depth++
+            '}' -> {
+                depth--
+                if (depth == 0) return i
+            }
+
+            '/' -> i = skipComment(source, i)
+            '"' -> i = skipLiteral(source, i, '"')
+            '\'' -> i = skipLiteral(source, i, '\'')
+        }
+        i++
+    }
+    return null
+}
+
+/** Skips past a / start when it opens a comment; returns the index to resume scanning at. */
+private fun skipComment(source: String, i: Int): Int {
+    val next = source.getOrNull(i + 1) ?: return i
+    return when (next) {
+        '/' -> source.indexOf('\n', i + 2).let { if (it == -1) source.length else it }
+        '*' -> source.indexOf("*/", i + 2).let { if (it == -1) source.length else it + 1 }
+        else -> i
+    }
+}
+
+/** Skips past a string/char literal starting at the opening quote in [i]. */
+private fun skipLiteral(source: String, i: Int, quote: Char): Int {
+    var j = i + 1
+    while (j < source.length) {
+        when (source[j]) {
+            '\\' -> j++
+            quote -> return j
+        }
+        j++
+    }
+    return source.length
 }
 
 private inline fun <T> JsonObjectBuilder.putJsonArrayOf(

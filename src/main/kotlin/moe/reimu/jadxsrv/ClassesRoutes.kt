@@ -337,7 +337,7 @@ internal fun refreshAffectedClasses(node: JavaNode) {
     toUpdate.mapTo(mutableSetOf()) { it.topParentClass }.forEach { it.unload() }
 }
 
-private fun findFreshVariableName(cls: JavaClass, javaVar: JavaVariable): String? {
+internal fun findFreshVariableName(cls: JavaClass, javaVar: JavaVariable): String? {
     cls.decompile()
     val oldVarNode = javaVar.varNode
     for ((_, ann) in cls.codeInfo.codeMetadata.asMap) {

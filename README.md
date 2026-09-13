@@ -62,12 +62,17 @@ Tools exposed (see `McpServer.kt`):
 | `list_classes` | Paginated list of all classes |
 | `get_class_source` | Decompiled Java source of a class |
 | `get_methods_of_class` / `get_fields_of_class` | Members of a class with signatures |
+| `get_method_by_name` | Decompiled source of a single method, extracted from the class |
 | `search_classes` / `search_methods` | Substring search over names (display and raw/obfuscated) |
 | `search_code` | Full-text search in decompiled code (decompiles on demand; slow at first) |
 | `get_xrefs_to_class` / `get_xrefs_to_method` / `get_xrefs_to_field` | Usage locations with class, line, and snippet |
 | `get_android_manifest` | Decoded AndroidManifest.xml |
+| `get_manifest_component` | Components of one type (activity/service/…) with exported state |
+| `get_main_activity_class` | Launcher activity resolved from the manifest |
+| `get_main_application_classes_names` / `get_main_application_classes_code` | Names or source of classes in the app's own package |
 | `list_resource_files` / `get_resource_file` / `get_strings` | Resource browsing (text resources only) |
 | `rename_class` / `rename_method` / `rename_field` | Set/reset deobfuscation aliases (same data and persistence as the REST `/rename` route) |
+| `rename_variable` | Rename a local variable/method argument, scoped to one SSA variable |
 
 Class lookup accepts the alias (deobfuscated) or raw full name; ambiguous method
 names can be disambiguated with the `method_id` signature from

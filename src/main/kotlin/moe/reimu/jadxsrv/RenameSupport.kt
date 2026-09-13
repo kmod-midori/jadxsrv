@@ -1,6 +1,8 @@
 package moe.reimu.jadxsrv
 
 import jadx.api.JavaNode
+import jadx.api.JavaVariable
+import jadx.api.data.impl.JadxCodeRef
 import jadx.api.data.impl.JadxCodeRename
 import jadx.api.data.impl.JadxNodeRef
 import org.slf4j.LoggerFactory
@@ -52,4 +54,19 @@ fun renameNode(decompiler: Decompiler, node: JavaNode, newName: String): String 
         ?: throw IllegalStateException("Failed to resolve renamed symbol")
     refreshAffectedClasses(freshNode)
     return freshNode.name
+}
+
+/**
+ * Renames a local variable (or method argument), mirroring jadx-gui's
+ * code-ref rename and the REST route's JavaVariable branch: the code data
+ * entry is scoped to the enclosing method via the variable's register+SSA
+ * ref, and refresh + name lookup follow the same reload dance as the route.
+ */
+fun renameVariable(decompiler: Decompiler, javaVar: JavaVariable, newName: String): String {
+    val rename = JadxCodeRename(JadxNodeRef.forMth(javaVar.mth), JadxCodeRef.forVar(javaVar), newName)
+    applyRename(decompiler, rename, javaVar)
+    refreshAffectedClasses(javaVar)
+    // The variable annotations are recreated on decompilation, so javaVar is
+    // stale after the reload; look up the fresh name by method+reg+ssa.
+    return findFreshVariableName(javaVar.topParentClass, javaVar) ?: newName
 }

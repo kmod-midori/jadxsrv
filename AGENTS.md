@@ -97,7 +97,16 @@ Input files are supplied as positional CLI arguments at server startup (see `App
 - The rename mutation + reload + optional `--code-data` persistence lives in
   `applyRename` (`RenameSupport.kt`), shared by the REST `/rename` route and the
   MCP rename tools; `renameNode` additionally refreshes affected classes for
-  name-based renames. Keep both entry points' behavior aligned there.
+  name-based renames, `renameVariable` mirrors the route's JavaVariable branch
+  (code ref scoped to the enclosing method). Keep both entry points' behavior
+  aligned there.
+- MCP variables are resolved by scanning `VarNode` entries in the top-level
+  class code metadata (unwrap `NodeDeclareRef`), keyed by method/reg/ssa;
+  method-only source (`get_method_by_name`) is cut out of the top class code
+  from `MethodNode.defPosition` with `extractMethodCode`, a mini-lexer-aware
+  brace matcher. Manifest tools parse the decoded `AndroidManifest.xml` with
+  javax.xml.dom (namespace-aware; `androidAttr()` falls back to the prefixed
+  attribute name).
 - defPosition gotcha: `JavaClass.decompile()` (its `load()`) skips codegen for
   classes already processed as dependencies of another class' codegen, so
   their `defPosition`/`codeMetadata` annotations are never set and stay 0
