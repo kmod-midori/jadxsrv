@@ -19,11 +19,8 @@ import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.calllogging.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import kotlinx.serialization.json.Json
 import moe.reimu.jadxsrv.model.LsResponse
 import org.slf4j.LoggerFactory
 import io.ktor.server.response.*
@@ -31,6 +28,8 @@ import io.ktor.server.routing.IgnoreTrailingSlash
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import moe.reimu.jadxsrv.model.StatResponse
 import org.slf4j.event.Level
+import java.io.File
+import java.nio.file.Files
 
 private val logger = LoggerFactory.getLogger("jadxsrv")
 
@@ -43,13 +42,16 @@ class App : CliktCommand() {
         "--port",
         help = "Port for the HTTP server to listen on"
     ).int().default(28080)
-    private val inputFiles by argument("input").file(mustExist = true, canBeDir = false).multiple(required = true)
+    private val inputFiles by argument(
+        "input",
+        help = "Input APK/JAR/DEX files, or directories scanned recursively for them (${CODE_FILE_EXTENSIONS.joinToString(", ")})",
+    ).file(mustExist = true).multiple(required = true)
 
     override fun run() {
         configureLogging()
         logger.info("Starting...")
 
-        val decompiler = loadDecompiler(inputFiles, codeData)
+        val decompiler = loadDecompiler(expandInputFiles(inputFiles), codeData)
         val mcpServer = createMcpServer(decompiler, version = javaClass.`package`.implementationVersion ?: "dev")
 
         logger.info("Listening on port {} (REST API + MCP endpoint at /mcp)", port)
@@ -58,13 +60,6 @@ class App : CliktCommand() {
             embeddedServer(Netty, port) {
                 install(CallLogging) {
                     level = Level.INFO
-                }
-
-                install(ContentNegotiation) {
-                    json(Json {
-                        isLenient = true
-                        encodeDefaults = true
-                    })
                 }
 
                 install(IgnoreTrailingSlash)
@@ -93,6 +88,38 @@ class App : CliktCommand() {
 }
 
 fun main(args: Array<String>) = App().main(args)
+
+/** File extensions jadx can decompile, used when expanding directory inputs. */
+private val CODE_FILE_EXTENSIONS = setOf("apk", "jar", "dex", "odex", "oat", "smali", "class")
+
+/**
+ * Expands directory arguments into the decompilable files below them
+ * (recursively, sorted for determinism, deduplicated); file arguments pass
+ * through unchanged. Fails fast with a clear message when nothing resolves.
+ */
+fun expandInputFiles(paths: List<File>): List<File> {
+    val files = LinkedHashSet<File>()
+    for (path in paths) {
+        if (path.isFile) {
+            files += path
+            continue
+        }
+        val stream = Files.walk(path.toPath())
+        try {
+            stream
+                .filter { Files.isRegularFile(it) }
+                .filter { it.fileName.toString().substringAfterLast('.', "").lowercase() in CODE_FILE_EXTENSIONS }
+                .sorted()
+                .forEach { files += it.toFile() }
+        } finally {
+            stream.close()
+        }
+    }
+    if (files.isEmpty()) {
+        throw IllegalArgumentException("No decompilable input files found under: ${paths.joinToString()}")
+    }
+    return files.toList()
+}
 
 fun configureLogging() {
     val context = LoggerFactory.getILoggerFactory() as LoggerContext

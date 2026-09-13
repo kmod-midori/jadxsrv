@@ -26,6 +26,10 @@ interface are visible in the other.
 # Run the server with one or more APK, JAR, or DEX inputs
 ./run.sh /absolute/path/to/app.apk
 
+# Or point it at a directory: it is scanned recursively for
+# .apk/.jar/.dex/.odex/.oat/.smali/.class files
+./run.sh /path/to/framework-dump/
+
 # Persist symbol renames to a JSON file across restarts (jadx-gui's
 # .jadx project codeData format; loaded back on startup if it exists)
 ./run.sh --code-data /path/to/codedata.json /absolute/path/to/app.apk
@@ -64,7 +68,7 @@ Tools exposed (see `McpServer.kt`):
 | `get_methods_of_class` / `get_fields_of_class` | Members of a class with signatures |
 | `get_method_by_name` | Decompiled source of a single method, extracted from the class |
 | `search_classes` / `search_methods` | Substring search over names (display and raw/obfuscated) |
-| `search_code` | Full-text search in decompiled code (decompiles on demand; slow at first) |
+| `search_code` | Full-text search in decompiled code — expensive last resort (decompiles every class on demand); prefer name search + xrefs |
 | `get_xrefs_to_class` / `get_xrefs_to_method` / `get_xrefs_to_field` | Usage locations with class, line, and snippet |
 | `get_android_manifest` | Decoded AndroidManifest.xml |
 | `get_manifest_component` | Components of one type (activity/service/…) with exported state |

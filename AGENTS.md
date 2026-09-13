@@ -25,7 +25,9 @@ APK/DEX/JAR decompilation over two interfaces sharing one `Decompiler`:
 
 ## Architecture
 
-Input files are supplied as positional CLI arguments at server startup (see `App` in `Main.kt`). One
+Inputs are positional CLI arguments: APK/JAR/DEX paths, or directories that
+`expandInputFiles()` (`Main.kt`) walks recursively for known code-file
+extensions (apk, jar, dex, odex, oat, smali, class). One
 `Decompiler` serves all requests for the supplied APK/JAR/DEX inputs.
 
 - `loadDecompiler()` creates the `Decompiler` (wraps `JadxDecompiler` + the loaded `.arsc` resource table) once at
@@ -90,10 +92,15 @@ Input files are supplied as positional CLI arguments at server startup (see `App
   protocol errors). Node lookup for the name-based MCP tools matches jadx's
   `classInfo.aliasFullName`/`rawName` (and for methods, `methodInfo.name`), which
   is a different resolution strategy than the REST routes' URL paths.
-- `Main.kt` installs `ContentNegotiation` before `mcpStreamableHttp`, and the SDK
-  logs a warning about that (it would install its own `McpJson` otherwise); this
-  is expected — our `Json { isLenient = true; encodeDefaults = true }` serializes
-  the MCP wire types correctly, and both route families must stay on one port.
+- `Main.kt` deliberately does not install `ContentNegotiation`: `mcpStreamableHttp`
+  installs it application-wide with `McpJson` (`encodeDefaults = true`,
+  `explicitNulls = false`), and two installs can't coexist — for a given content
+  type the application-level converter wins for every route, so REST responses
+  would silently take whichever Json got installed first. With `McpJson`,
+  nullable DTO fields (e.g. `AnnotationResponse.content`, `Location.position`,
+  `RenameInfoResponse.name`) are omitted from REST JSON instead of encoded as
+  `null`; the jadxsrv-code extension types them as optional, don't re-add an
+  app-level explicit-nulls Json.
 - The rename mutation + reload + optional `--code-data` persistence lives in
   `applyRename` (`RenameSupport.kt`), shared by the REST `/rename` route and the
   MCP rename tools; `renameNode` additionally refreshes affected classes for
@@ -103,8 +110,11 @@ Input files are supplied as positional CLI arguments at server startup (see `App
 - MCP variables are resolved by scanning `VarNode` entries in the top-level
   class code metadata (unwrap `NodeDeclareRef`), keyed by method/reg/ssa;
   method-only source (`get_method_by_name`) is cut out of the top class code
-  from `MethodNode.defPosition` with `extractMethodCode`, a mini-lexer-aware
-  brace matcher. Manifest tools parse the decoded `AndroidManifest.xml` with
+  by `extractMethodCode`, scanning `ICodeMetadata` DECLARATION/END annotations
+  from the method's defPos with DECLARATION/END annotation nesting instead of
+  text brace matching — immune to braces in strings/comments; `defPos == 0`
+  legitimately means the method is absent from generated code (empty ctors,
+  inlined/replaced methods). Manifest tools parse the decoded `AndroidManifest.xml` with
   javax.xml.dom (namespace-aware; `androidAttr()` falls back to the prefixed
   attribute name).
 - defPosition gotcha: `JavaClass.decompile()` (its `load()`) skips codegen for
