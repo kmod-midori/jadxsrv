@@ -10,8 +10,10 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.main
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.arguments.multiple
+import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.file
+import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.path
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
@@ -36,6 +38,10 @@ class App : CliktCommand() {
         "--code-data",
         help = "Persist renames/comments to this JSON file (jadx-gui's .jadx project codeData format); loaded back on startup"
     ).path(mustExist = false, canBeDir = false)
+    private val port by option(
+        "--port",
+        help = "Port for the HTTP server to listen on"
+    ).int().default(28080)
     private val inputFiles by argument("input").file(mustExist = true, canBeDir = false).multiple(required = true)
 
     override fun run() {
@@ -44,8 +50,10 @@ class App : CliktCommand() {
 
         val decompiler = loadDecompiler(inputFiles, codeData)
 
+        logger.info("Listening on port {}", port)
+
         try {
-            embeddedServer(Netty, 28080) {
+            embeddedServer(Netty, port) {
                 install(CallLogging) {
                     level = Level.INFO
                 }

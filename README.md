@@ -24,7 +24,12 @@ system), rather than as an end-user application on its own.
 ./run.sh --code-data /path/to/codedata.json /absolute/path/to/app.apk
 ```
 
-The server listens on `http://0.0.0.0:28080`.
+The server listens on `http://0.0.0.0:28080` by default; pass `--port <n>` to
+change it:
+
+```bash
+./run.sh --port 9000 /absolute/path/to/app.apk
+```
 
 ## How it works
 

@@ -9,8 +9,8 @@ system (paths encode which package/class/resource is being browsed).
 
 - Build: `./gradlew build`
 - Run locally: `./run.sh /path/to/app.apk` (starts the Ktor server on port
-  `28080`, see `Main.kt`). The launcher passes one or more input paths to
-  Gradle's `run` task.
+  `28080` by default; override with `--port <n>`, see `Main.kt`). The
+  launcher passes one or more input paths to Gradle's `run` task.
 - Run all tests: `./gradlew test`
 - Run a single test class: `./gradlew test --tests "moe.reimu.jadxsrv.SomeTestClass"`
 - Run a single test method: `./gradlew test --tests "moe.reimu.jadxsrv.SomeTestClass.someMethod"`
